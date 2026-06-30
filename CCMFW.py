@@ -1,0 +1,589 @@
+import numpy as np
+from scipy.spatial import ConvexHull
+import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
+from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+from matplotlib.lines import Line2D
+import matplotlib.patches as mpatches
+from lib import Extract_Map_I2B, Map_I2B, Plot_Hull_H_2D, Transform_and_Extract_Facets 
+import math
+def Get_Ellipsoid_CFW(Q, r, I_abs_max, m, plot_verbose=True, regularization_factor=1e-10):
+    """
+    Calculates the convex feasible workspace for combined ellipsoidal and cubic constraints.
+    The constraints are i^T*Q*i <= r and -I_abs_max <= i_k <= I_abs_max.
+
+    Args:
+        Q (np.array): The matrix of the quadratic form (should be positive definite for ellipsoid).
+        r (float): The scalar value for the quadratic constraint.
+        I_abs_max (float): Absolute maximum allowable current for any coil.
+        m (int): Number of points to generate on the ellipsoid surface.
+        plot_verbose (bool): If True, generates a plot (2D or 3D based on matrix size).
+        regularization_factor (float): Factor to regularize ill-conditioned matrices.
+
+    Returns:
+        tuple:
+            - hull (scipy.spatial.ConvexHull or None): The convex hull.
+            - H_representation (dict or None): H-representation (Ax <= b).
+            - remaining_points (np.array): Feasible points.
+            - deleted_points (np.array): Points originally outside bounds.
+    """
+    n = Q.shape[0]
+    I_max = I_abs_max
+
+    # Debug: Print matrix properties
+    print(f"Q matrix shape: {Q.shape}")
+    print(f"Current space dimension: {n}D")
+    print(f"Q matrix:\n{Q}")
+    
+    # Check matrix conditioning
+    eigenvalues = np.linalg.eigvals(Q)
+    condition_number = np.linalg.cond(Q)
+    print(f"Eigenvalues: {eigenvalues}")
+    print(f"Condition number: {condition_number}")
+    print(f"Minimum eigenvalue: {np.min(eigenvalues)}")
+    print(f"Maximum eigenvalue: {np.max(eigenvalues)}")
+    print(f"r value: {r}")
+    
+    # Check if matrix is positive definite
+    min_eigenvalue = np.min(eigenvalues)
+    is_positive_definite = min_eigenvalue > 1e-12  # Use a reasonable threshold
+    
+    print(f"Is Q positive definite? {is_positive_definite}")
+    
+    if not is_positive_definite:
+        print(f"WARNING: Matrix Q is not positive definite!")
+        print(f"The constraint i^T*Q*i <= r does NOT define an ellipsoid.")
+        print(f"This constraint may define:")
+        if min_eigenvalue < -1e-12:
+            print("  - A hyperbolic region (indefinite quadratic form)")
+        else:
+            print("  - A degenerate ellipsoid (singular quadratic form)")
+        
+        print(f"Options:")
+        print(f"1. Add regularization to make Q positive definite")
+        print(f"2. Use only the cubic constraints (hypercube)")
+        print(f"3. Reformulate the problem")
+        
+        # Option 1: Add regularization
+        regularization_needed = max(regularization_factor, abs(min_eigenvalue) + 1e-8)
+        Q_regularized = Q + regularization_needed * np.eye(n)
+        eigenvalues_reg = np.linalg.eigvals(Q_regularized)
+        print(f"Adding regularization of {regularization_needed}")
+        print(f"Regularized eigenvalues: {eigenvalues_reg}")
+        
+        # Ask user for choice (in practice, you might want to make this automatic)
+        use_regularization = True  # Set to True to proceed with regularization
+        
+        if use_regularization:
+            print("Proceeding with regularized matrix...")
+            Q = Q_regularized
+            eigenvalues = eigenvalues_reg
+        else:
+            print("Proceeding with cubic constraints only...")
+            # Generate points uniformly in the hypercube instead
+            remaining_points = np.random.uniform(-I_max, I_max, (m, n))
+            deleted_points = np.array([])
+            
+            try:
+                hull = ConvexHull(remaining_points)
+                A_matrix = hull.equations[:, :-1]
+                b_vector = -hull.equations[:, -1]
+                H_representation = {'A': A_matrix, 'b': b_vector}
+                
+                if plot_verbose:
+                    if n == 2:
+                        _plot_2d_square_only(remaining_points, I_max)
+                    elif n == 3:
+                        _plot_3d_cube_only(remaining_points, I_max)
+                
+                return hull, H_representation, remaining_points, deleted_points
+            except Exception as e:
+                print(f"Error with cubic-only approach: {e}")
+                return None, None, remaining_points, deleted_points
+
+    # Check if r is reasonable compared to eigenvalues
+    max_eigenvalue = np.max(eigenvalues)
+    min_eigenvalue = np.min(eigenvalues)
+    print(f"r / min_eigenvalue = {r / min_eigenvalue}")
+    print(f"r / max_eigenvalue = {r / max_eigenvalue}")
+    
+    # Check if the ellipsoid is reasonable in size
+    if r / min_eigenvalue > (I_max**2):
+        print(f"WARNING: The ellipsoid may be much larger than the cubic constraints!")
+        print(f"Ellipsoid 'radius' in weakest direction: {np.sqrt(r / min_eigenvalue):.3f}")
+        print(f"Cubic constraint limit: {I_max}")
+
+    # --- 1. Generate m points on the ellipsoid i^T*Q*i = r ---
+    try:
+        eigenvals, eigenvecs = np.linalg.eigh(Q)
+        # Ensure all eigenvalues are positive
+        eigenvals = np.maximum(eigenvals, 1e-12)
+        
+        # For transformation: Q = U * Lambda * U^T, so ellipsoid transform is U * sqrt(Lambda)
+        sqrt_lambda = np.sqrt(eigenvals)
+        
+        print(f"Eigenvalue decomposition successful")
+        print(f"Semi-axes lengths: {np.sqrt(r) / sqrt_lambda}")
+        
+    except Exception as e:
+        print(f"Eigenvalue decomposition failed: {e}")
+        return None, None, np.array([]), np.array([])
+
+    # Generate evenly distributed points on unit sphere (2D or 3D)
+    if m == 0:
+        points_on_unit_sphere = np.empty((0, n))
+    elif n == 2:
+        # Generate evenly distributed points on unit circle
+        points_on_unit_sphere = np.zeros((m, 2))
+        theta = np.linspace(0, 2 * np.pi, m, endpoint=False)
+        points_on_unit_sphere[:, 0] = np.cos(theta)
+        points_on_unit_sphere[:, 1] = np.sin(theta)
+    elif n == 3:
+        points_on_unit_sphere = np.zeros((m, 3))
+        indices = np.arange(0, m, dtype=float) + 0.5
+        phi = np.arccos(1 - 2 * indices / m)
+        theta = np.pi * (1 + np.sqrt(5)) * indices
+        points_on_unit_sphere[:, 0] = np.cos(theta) * np.sin(phi)
+        points_on_unit_sphere[:, 1] = np.sin(theta) * np.sin(phi)
+        points_on_unit_sphere[:, 2] = np.cos(phi)
+    else:
+        # Fallback for higher dimensions
+        random_points = np.random.normal(size=(m, n))
+        norm = np.linalg.norm(random_points, axis=1, keepdims=True)
+        points_on_unit_sphere = np.zeros_like(random_points)
+        non_zero_norm_mask = (norm > 1e-15).flatten()
+        points_on_unit_sphere[non_zero_norm_mask] = random_points[non_zero_norm_mask] / norm[non_zero_norm_mask]
+        
+        # Handle zero norm case
+        zero_norm_mask = ~non_zero_norm_mask
+        if np.any(zero_norm_mask):
+            canonical_vector = np.zeros(n)
+            if n > 0: 
+                canonical_vector[0] = 1.0
+            points_on_unit_sphere[zero_norm_mask] = canonical_vector
+
+    # Transform unit sphere points to ellipsoid surface
+    # Method: Transform to principal axis coordinates, scale, then transform back
+    
+    # Step 1: Transform unit sphere points to ellipsoid coordinates (principal axes)
+    # In the principal axis system, the ellipsoid equation is sum((x_i/a_i)^2) = 1
+    # where a_i = sqrt(r) / sqrt(lambda_i) are the semi-axis lengths
+    semi_axes = np.sqrt(r) / sqrt_lambda
+    
+    # Step 2: Scale unit sphere points by semi-axes lengths
+    ellipsoid_coords_principal = points_on_unit_sphere * semi_axes.reshape(1, -1)
+    
+    # Step 3: Transform back to original coordinate system
+    points_on_ellipsoid = ellipsoid_coords_principal @ eigenvecs.T
+    
+    print(f"Generated {points_on_ellipsoid.shape[0]} evenly distributed points on ellipsoid")
+    print(f"Point range: min = {np.min(points_on_ellipsoid, axis=0)}, max = {np.max(points_on_ellipsoid, axis=0)}")
+    
+    # Verify that points are on the ellipsoid surface (debugging)
+    if m > 0:
+        # Check that i^T * Q * i ≈ r for all points
+        quadratic_values = np.sum((points_on_ellipsoid @ eigenvecs @ np.diag(sqrt_lambda))**2, axis=1)
+        max_deviation = np.max(np.abs(quadratic_values - r))
+        print(f"Maximum deviation from ellipsoid surface: {max_deviation}")
+        if max_deviation > 1e-10:
+            print("Warning: Points may not be exactly on ellipsoid surface")
+
+    # --- 2. Project points outside the hypercube inward ---
+    original_points = points_on_ellipsoid.copy()
+    max_abs_coord = np.max(np.abs(original_points), axis=1)
+    outside_mask = max_abs_coord > I_max
+    
+    print(f"Points outside bounds: {np.sum(outside_mask)} / {len(outside_mask)}")
+    print(f"Percentage outside bounds: {100*np.sum(outside_mask)/len(outside_mask):.1f}%")
+
+    points_inside_bounds = original_points.copy()
+    if np.any(outside_mask):
+        outside_points = original_points[outside_mask]
+        max_abs_for_scaling = max_abs_coord[outside_mask].reshape(-1, 1)
+        scaling_factors = I_max / max_abs_for_scaling
+        points_inside_bounds[outside_mask] = outside_points * scaling_factors
+
+    deleted_points = original_points[outside_mask]
+    remaining_points = points_inside_bounds
+    
+    print(f"Remaining points after projection: {remaining_points.shape[0]}")
+
+    # --- 3. Compute Convex Hull ---
+    if remaining_points.shape[0] < n + 1:
+        print(f"Warning: Not enough points ({remaining_points.shape[0]}) to form a convex hull in {n}D.")
+        return None, None, remaining_points, deleted_points
+
+    try:
+        hull = ConvexHull(remaining_points)
+        print(f"ConvexHull computed successfully with {len(hull.vertices)} vertices")
+    except Exception as e:
+        print(f"Error computing ConvexHull: {e}")
+        return None, None, remaining_points, deleted_points
+
+    A_matrix = hull.equations[:, :-1]
+    b_vector = -hull.equations[:, -1]
+    H_representation = {'A': A_matrix, 'b': b_vector}
+
+    if plot_verbose:
+        if n == 2:
+            _plot_2d_ellipsoid_hull(hull, remaining_points, deleted_points, I_max, Q, r)
+        elif n == 3:
+            _plot_3d_ellipsoid_hull(hull, remaining_points, deleted_points, I_max, Q, r)
+
+    return hull, H_representation, remaining_points, deleted_points
+
+def _plot_2d_ellipsoid_hull(hull, remaining_points, deleted_points, I_abs_max, Q, r):
+    """Plot for 2D current space with ellipse and square constraints"""
+    fig, ax = plt.subplots(figsize=(10, 8))
+    ax.set_title('2D Feasible Current Space (Ellipse & Square)')
+    ax.set_xlabel('I_1')
+    ax.set_ylabel('I_2')
+    ax.grid(True)
+    ax.set_aspect('equal')
+    
+    # Plot convex hull of the feasible region
+    if hull is not None:
+        # Get hull vertices in order for 2D plotting
+        hull_vertices = remaining_points[hull.vertices]
+        # Sort vertices to form a polygon
+        center = np.mean(hull_vertices, axis=0)
+        angles = np.arctan2(hull_vertices[:, 1] - center[1], hull_vertices[:, 0] - center[0])
+        sorted_indices = np.argsort(angles)
+        hull_vertices_sorted = hull_vertices[sorted_indices]
+        
+        # Close the polygon
+        hull_vertices_closed = np.vstack([hull_vertices_sorted, hull_vertices_sorted[0]])
+        ax.fill(hull_vertices_closed[:, 0], hull_vertices_closed[:, 1], 
+                color='cyan', alpha=0.3, edgecolor='b', linewidth=2, label='Feasible Region (Hull)')
+
+    # Plot the square constraint boundaries
+    I_min, I_max = -I_abs_max, I_abs_max
+    square_corners = np.array([[I_min, I_min], [I_max, I_min], [I_max, I_max], [I_min, I_max], [I_min, I_min]])
+    # ax.plot(square_corners[:, 0], square_corners[:, 1], 'k-', linewidth=2, alpha=0.7, label='Square Constraint')
+    ax.plot(square_corners[:, 0], square_corners[:, 1], 'k-', linewidth=2, alpha=0.7)
+    # ax.scatter([I_min, I_max, I_max, I_min], [I_min, I_min, I_max, I_max], 
+    #            c='k', marker='x', s=50, label='Square Corners')
+
+    # Plot the original ellipse using the same transformation as point generation
+    eigenvals, eigenvecs = np.linalg.eigh(Q)
+    eigenvals = np.maximum(eigenvals, 1e-12)
+    sqrt_lambda = np.sqrt(eigenvals)
+    semi_axes = np.sqrt(r) / sqrt_lambda
+    
+    # Generate ellipse points
+    theta = np.linspace(0, 2 * np.pi, 200)
+    unit_circle = np.array([np.cos(theta), np.sin(theta)]).T
+    ellipse_coords_principal = unit_circle * semi_axes.reshape(1, -1)
+    ellipse_points = ellipse_coords_principal @ eigenvecs.T
+    
+    ax.plot(ellipse_points[:, 0], ellipse_points[:, 1], 'g-', linewidth=2, alpha=0.7, label='Ellipse Constraint')
+
+    # Plot remaining and deleted points for debugging
+    if len(remaining_points) > 0:
+        # ax.scatter(remaining_points[:, 0], remaining_points[:, 1], 
+        #           c='blue', s=15, alpha=0.6, label='Feasible Points')
+        ax.scatter(remaining_points[:, 0], remaining_points[:, 1], 
+                  c='blue', s=15, alpha=0.6)
+    
+    if len(deleted_points) > 0:
+        ax.scatter(deleted_points[:, 0], deleted_points[:, 1], 
+                  c='red', s=15, alpha=0.6, label='Projected Points')
+
+    # Set axis limits
+    all_points = np.vstack([remaining_points, ellipse_points, square_corners[:-1]])
+    max_range = np.max(np.abs(all_points)) * 1.2
+    max_lim = min(max_range, I_abs_max * 1.1)
+    
+    ax.set_xlim([-max_lim, max_lim])
+    ax.set_ylim([-max_lim, max_lim])
+    ax.legend()
+    plt.show()
+
+def _plot_2d_square_only(points, I_abs_max):
+    """Plot for 2D square constraints only (when Q is not positive definite)"""
+    fig, ax = plt.subplots(figsize=(10, 8))
+    ax.set_title('2D Feasible Current Space (Square Constraints Only)')
+    ax.set_xlabel('I_1')
+    ax.set_ylabel('I_2')
+    ax.grid(True)
+    ax.set_aspect('equal')
+
+    # Plot the points
+    ax.scatter(points[:, 0], points[:, 1], c='blue', s=15, alpha=0.6, label='Points')
+
+    # Plot the square constraint
+    # I_min, I_max = -I_abs_max, I_abs_max
+    # square_corners = np.array([[I_min, I_min], [I_max, I_min], [I_max, I_max], [I_min, I_max], [I_min, I_min]])
+    # ax.fill(square_corners[:, 0], square_corners[:, 1], 
+    #         color='lightgray', alpha=0.3, edgecolor='k', linewidth=2, label='Square Constraint')
+    # ax.scatter([I_min, I_max, I_max, I_min], [I_min, I_min, I_max, I_max], 
+    #            c='k', marker='x', s=50, label='Square Corners')
+
+    ax.set_xlim([-I_abs_max*1.1, I_abs_max*1.1])
+    ax.set_ylim([-I_abs_max*1.1, I_abs_max*1.1])
+    ax.legend()
+    plt.show()
+
+
+def _plot_3d_ellipsoid_hull(hull, remaining_points, deleted_points, I_abs_max, Q, r):
+    fig = plt.figure(figsize=(10, 8))
+    ax = fig.add_subplot(111, projection='3d')
+    ax.set_title(f'3D Feasible Current Space (Ellipsoid & Cube)')
+    ax.set_xlabel('I_1'); ax.set_ylabel('I_2'); ax.set_zlabel('I_3')
+
+    # Plot convex hull of the feasible region
+    if hull is not None:
+        triangles = hull.points[hull.simplices]
+        hull_collection = Poly3DCollection(triangles, facecolors='cyan', edgecolors='b', 
+                                          linewidths=0.5, alpha=0.3)
+        ax.add_collection3d(hull_collection)
+
+    # Plot the cube constraint faces
+    I_min, I_max = -I_abs_max, I_abs_max
+    
+    # Define the 6 faces of the cube
+    cube_faces = [
+        # Face 1: x = I_min
+        [[I_min, I_min, I_min], [I_min, I_max, I_min], [I_min, I_max, I_max], [I_min, I_min, I_max]],
+        # Face 2: x = I_max  
+        [[I_max, I_min, I_min], [I_max, I_max, I_min], [I_max, I_max, I_max], [I_max, I_min, I_max]],
+        # Face 3: y = I_min
+        [[I_min, I_min, I_min], [I_max, I_min, I_min], [I_max, I_min, I_max], [I_min, I_min, I_max]],
+        # Face 4: y = I_max
+        [[I_min, I_max, I_min], [I_max, I_max, I_min], [I_max, I_max, I_max], [I_min, I_max, I_max]],
+        # Face 5: z = I_min
+        [[I_min, I_min, I_min], [I_max, I_min, I_min], [I_max, I_max, I_min], [I_min, I_max, I_min]],
+        # Face 6: z = I_max
+        [[I_min, I_min, I_max], [I_max, I_min, I_max], [I_max, I_max, I_max], [I_min, I_max, I_max]]
+    ]
+    
+    # Create and add cube face collection
+    cube_face_collection = Poly3DCollection(cube_faces, facecolors='lightgray', edgecolors='k', 
+                                           linewidths=1, alpha=0.15)
+    ax.add_collection3d(cube_face_collection)
+
+    # Plot the bounding box corners
+    corners = np.array([[i,j,k] for i in [I_min,I_max] for j in [I_min,I_max] for k in [I_min,I_max]])
+    ax.scatter(corners[:, 0], corners[:, 1], corners[:, 2], c='k', marker='x', s=50)
+
+    # Plot the original ellipsoid surface using the SAME transformation as point generation
+    u = np.linspace(0, 2 * np.pi, 30)
+    v = np.linspace(0, np.pi, 30)
+    x_unit = np.outer(np.cos(u), np.sin(v))
+    y_unit = np.outer(np.sin(u), np.sin(v))
+    z_unit = np.outer(np.ones(np.size(u)), np.cos(v))
+    
+    # Use the SAME eigenvalue decomposition as in the main function
+    eigenvals, eigenvecs = np.linalg.eigh(Q)
+    eigenvals = np.maximum(eigenvals, 1e-12)  # Ensure positive eigenvalues
+    sqrt_lambda = np.sqrt(eigenvals)
+    
+    # Transform unit sphere points to ellipsoid surface using SAME method as point generation
+    unit_sphere_surface = np.stack([x_unit.ravel(), y_unit.ravel(), z_unit.ravel()], axis=1)
+    
+    # Step 1: Scale by semi-axes lengths (same as point generation)
+    semi_axes = np.sqrt(r) / sqrt_lambda
+    ellipsoid_coords_principal = unit_sphere_surface * semi_axes.reshape(1, -1)
+    
+    # Step 2: Transform back to original coordinate system (same as point generation)
+    ellipsoid_surface_points = ellipsoid_coords_principal @ eigenvecs.T
+    
+    # Reshape back for surface plotting
+    ellipsoid_x = ellipsoid_surface_points[:,0].reshape(x_unit.shape)
+    ellipsoid_y = ellipsoid_surface_points[:,1].reshape(y_unit.shape) 
+    ellipsoid_z = ellipsoid_surface_points[:,2].reshape(z_unit.shape)
+    
+    # ax.plot_surface(ellipsoid_x, ellipsoid_y, ellipsoid_z,
+    #                 color='g', alpha=0.2, linewidth=0)
+
+    # Plot remaining and deleted points for debugging
+    # if len(remaining_points) > 0:
+    #     ax.scatter(remaining_points[:, 0], remaining_points[:, 1], remaining_points[:, 2], 
+    #               c='blue', s=10, alpha=0.6, label='Feasible Points')
+    
+    # if len(deleted_points) > 0:
+    #     ax.scatter(deleted_points[:, 0], deleted_points[:, 1], deleted_points[:, 2], 
+    #               c='red', s=10, alpha=0.6, label='Projected Points')
+
+    # Legend
+    handles = [
+        mpatches.Patch(facecolor='cyan', edgecolor='b', alpha=0.3),
+        Line2D([0], [0], color='g', lw=4, alpha=0.5),
+        mpatches.Patch(facecolor='lightgray', edgecolor='k', alpha=0.15),
+        Line2D([0], [0], marker='x', color='k', linestyle='None', markersize=7)
+    ]
+    labels = ['Feasible Region (Hull)', 'Ellipsoid Constraint', 'Cube Constraint Faces', 'Cube Corners']
+    ax.legend(handles, labels)
+    ax.grid(True)
+    
+    # Set dynamic axis limits based on actual data
+    all_points = np.vstack([remaining_points, ellipsoid_surface_points, corners])
+    max_range = np.max(np.abs(all_points)) * 1.2
+    max_lim = min(max_range, I_abs_max * 1.1)  # Don't exceed reasonable bounds
+    
+    ax.set_xlim([-max_lim, max_lim])
+    ax.set_ylim([-max_lim, max_lim])
+    ax.set_zlim([-max_lim, max_lim])
+    
+    plt.show()
+ 
+
+def _plot_3d_cube_only(points, I_abs_max):
+    """Plot for cubic constraints only (when Q is not positive definite)"""
+    fig = plt.figure(figsize=(10, 8))
+    ax = fig.add_subplot(111, projection='3d')
+    ax.set_title('3D Feasible Current Space (Cubic Constraints Only)')
+    ax.set_xlabel('I_1'); ax.set_ylabel('I_2'); ax.set_zlabel('I_3')
+
+    # Plot the points
+    ax.scatter(points[:, 0], points[:, 1], points[:, 2], c='blue', s=10, alpha=0.6)
+
+    # Plot the bounding box corners
+    I_min, I_max = -I_abs_max, I_abs_max
+    corners = np.array([[i,j,k] for i in [I_min,I_max] for j in [I_min,I_max] for k in [I_min,I_max]])
+    ax.scatter(corners[:, 0], corners[:, 1], corners[:, 2], c='k', marker='x', s=50)
+
+    # Draw cube faces
+    # Define the 6 faces of the cube
+    faces = [
+        # Face 1: x = I_min
+        [[I_min, I_min, I_min], [I_min, I_max, I_min], [I_min, I_max, I_max], [I_min, I_min, I_max]],
+        # Face 2: x = I_max  
+        [[I_max, I_min, I_min], [I_max, I_max, I_min], [I_max, I_max, I_max], [I_max, I_min, I_max]],
+        # Face 3: y = I_min
+        [[I_min, I_min, I_min], [I_max, I_min, I_min], [I_max, I_min, I_max], [I_min, I_min, I_max]],
+        # Face 4: y = I_max
+        [[I_min, I_max, I_min], [I_max, I_max, I_min], [I_max, I_max, I_max], [I_min, I_max, I_max]],
+        # Face 5: z = I_min
+        [[I_min, I_min, I_min], [I_max, I_min, I_min], [I_max, I_max, I_min], [I_min, I_max, I_min]],
+        # Face 6: z = I_max
+        [[I_min, I_min, I_max], [I_max, I_min, I_max], [I_max, I_max, I_max], [I_min, I_max, I_max]]
+    ]
+    
+    # Create and add face collection
+    face_collection = Poly3DCollection(faces, facecolors='lightgray', edgecolors='k', 
+                                     linewidths=1, alpha=0.5)
+    ax.add_collection3d(face_collection)
+
+    ax.set_xlim([-I_abs_max*1.1, I_abs_max*1.1])
+    ax.set_ylim([-I_abs_max*1.1, I_abs_max*1.1])
+    ax.set_zlim([-I_abs_max*1.1, I_abs_max*1.1])
+    ax.grid(True)
+    plt.show()
+
+
+if __name__ == "__main__":
+    target_points = [
+        # {'X': -0.02, 'Y': -0.05, 'Z': 0, 'Bx': True, 'By': True, 'Bz': None, 'Bx_dx': None, 'Bx_dy': None, 'Bx_dz': None, 'By_dy': None, 'By_dz': None},
+        # {'X': 0.0, 'Y': -0.05, 'Z': 0, 'Bx': True, 'By': True, 'Bz': None, 'Bx_dx': None, 'Bx_dy': None, 'Bx_dz': None, 'By_dy': None, 'By_dz': None},       
+        {'X': 0.02, 'Y': -0.05, 'Z': 0, 'Bx': True, 'By': True, 'Bz': None, 'Bx_dx': None, 'Bx_dy': None, 'Bx_dz': None, 'By_dy': None, 'By_dz': None}
+    ]
+    A = Extract_Map_I2B(target_points) @ Map_I2B(target_points)
+    # print("A matrix:", A)
+
+    I_abs_max = 17
+    m = 5900
+    Q_matrix = A.T @ A
+    # print("Q matrix:", Q_matrix)
+    r_scalar = 0.057**2
+
+    # r = 3
+    # Power = 675 *2
+    # Q_matrix = np.array([[1, 0, 0], [0, 1, 0], [0, 0, 1]]) * r
+    # r_scalar = Power
+
+    hull, H_representation, remaining_points, deleted_points = Get_Ellipsoid_CFW(Q_matrix, r_scalar, I_abs_max, m, plot_verbose=True)
+    G = hull.equations[:, :-1]
+    k = -hull.equations[:, -1]
+    # print("H representation:", H_representation)
+    # print("Minimal b:", min(k))
+    N, d = Transform_and_Extract_Facets(A, G, k)
+    print("Minimal d1:", min(d))
+    Plot_Hull_H_2D(N, d)
+
+    # target_point1 = [
+    #     {'X': -0.02, 'Y': -0.05, 'Z': 0, 'Bx': True, 'By': True, 'Bz': None, 'Bx_dx': None, 'Bx_dy': None, 'Bx_dz': None, 'By_dy': None, 'By_dz': None},
+    #     # {'X': 0.0, 'Y': -0.05, 'Z': 0, 'Bx': True, 'By': True, 'Bz': None, 'Bx_dx': None, 'Bx_dy': None, 'Bx_dz': None, 'By_dy': None, 'By_dz': None},       
+    #     # {'X': 0.02, 'Y': -0.05, 'Z': 0, 'Bx': True, 'By': True, 'Bz': None, 'Bx_dx': None, 'Bx_dy': None, 'Bx_dz': None, 'By_dy': None, 'By_dz': None}
+    # ]
+    # A_2 = Extract_Map_I2B(target_point1) @ Map_I2B(target_point1)
+    # N, d = Transform_and_Extract_Facets(A_2, G, k)
+    # print("Minimal d2:", min(d))
+    # Plot_Hull_H_2D(N, d)
+    
+    target_point2 = [
+        {'X': -0.02, 'Y': -0.05, 'Z': 0, 'Bx': True, 'By': True, 'Bz': None, 'Bx_dx': None, 'Bx_dy': None, 'Bx_dz': None, 'By_dy': None, 'By_dz': None},
+        # {'X': 0.0, 'Y': -0.05, 'Z': 0, 'Bx': True, 'By': True, 'Bz': None, 'Bx_dx': None, 'Bx_dy': None, 'Bx_dz': None, 'By_dy': None, 'By_dz': None},       
+        # {'X': 0.02, 'Y': -0.05, 'Z': 0, 'Bx': True, 'By': True, 'Bz': None, 'Bx_dx': None, 'Bx_dy': None, 'Bx_dz': None, 'By_dy': None, 'By_dz': None}
+        ]
+    A_2 = Extract_Map_I2B(target_point2) @ Map_I2B(target_point2)
+    N, d = Transform_and_Extract_Facets(A_2, G, k)
+    print("Minimal d3:", min(d))
+    Plot_Hull_H_2D(N, d)
+
+    xx = np.linspace(-0.06, 0.0, 50)
+    yy = np.linspace(-0.03, 0.03, 50)
+
+    # Create a meshgrid from x and y
+    X, Z = np.meshgrid(yy, xx)
+
+    # Create a mask for points inside the circle x^2 + y^2 <= 0.06^2
+    R = 0.06
+    circle_mask = (X**2 + Z**2) <= R **2
+
+  
+    I_max = 17
+    I_min = -I_max
+
+    # Define the amplitude of the magnetic field
+    B_amp = 0.053 # Units of Tesla
+
+    # Initialize P with NaN values
+    P = np.full_like(X, np.nan)
+
+    # Evaluate the function only at points inside the circle
+    for i in range(len(xx)):
+        for j in range(len(yy)):
+            if circle_mask[i, j]:  # Only process points inside the circle
+                target_points = [
+                    {'X': X[i, j], 'Y': Z[i, j], 'Z': 0, 'Bx': True, 'By': True, 'Bz': None, 'Bx_dx': None, 'Bx_dy': None, 'Bx_dz': None, 'By_dy': None, 'By_dz': None},
+                ]
+                A = Extract_Map_I2B(target_points) @ Map_I2B(target_points)
+                N, d = Transform_and_Extract_Facets(A, G, k)
+                P[i, j] = 1 if (d >= B_amp).all() else -1
+
+    # Create a 2D plot - only plot points inside the circle
+    valid_mask = ~np.isnan(P)
+    in_workspace = (P == 1) & valid_mask
+    out_workspace = (P == -1) & valid_mask
+
+    plt.scatter(X[in_workspace], Z[in_workspace], c='salmon', s=10, alpha=1, label='In influence region')
+    plt.scatter(X[out_workspace], Z[out_workspace], c='green', s=10, alpha=1, label='Out influence region')
+
+    # Draw the circle boundary for reference
+    theta = np.linspace(0, 2*np.pi, 100)
+    circle_x = R * np.cos(theta)
+    circle_y = R * np.sin(theta)
+    plt.plot(circle_x, circle_y, 'k--', linewidth=1, alpha=0.5)
+    R = R + 0.01
+    circle_x = R * np.cos(theta)
+    circle_y = R * np.sin(theta)
+    plt.plot(circle_x, circle_y, 'k--', linewidth=1, alpha=0.5)
+
+    # Set the aspect ratio of the plot to be equal
+    plt.gca().set_aspect('equal')
+
+    # Add labels and title
+    plt.xlabel('X Position (m)')
+    plt.ylabel('Y Position (m)')
+
+    # Add a legend
+    plt.legend(loc='upper left')
+
+    plt.ylim(-0.06, 0.0)
+    plt.xlim(-0.03, 0.03)
+
+    # Show the plot
+    plt.grid()
+    plt.gca().set_facecolor('lightgray')
+    plt.show()
