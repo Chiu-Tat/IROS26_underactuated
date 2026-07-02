@@ -1,8 +1,20 @@
+"""Visualize the dual-layer axial A* exploration steps (produces figures/planner_process.png).
+
+Self-contained A* with snapshot recording plus grid/exploration drawing helpers;
+renders a 2x3 figure of the obstacle maps and search progression.
+
+    python scripts/visualize_planner_steps.py
+"""
+
+import pathlib
+
 import numpy as np
 import heapq
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 from matplotlib.patches import FancyArrowPatch
+
+FIGURES_DIR = pathlib.Path(__file__).resolve().parent.parent / "figures"
 
 # Manhattan distance heuristic
 def manhattan(p1, p2):
@@ -311,7 +323,8 @@ def main():
         #                   edgecolor='#999999', alpha=0.85))
 
     plt.tight_layout()
-    plt.savefig('e:/CUHK/Research/Reconfigurable surgical robot document/Modeling/Paper_ICRA2026/planner_process.png',
+    FIGURES_DIR.mkdir(exist_ok=True)
+    plt.savefig(FIGURES_DIR / "planner_process.png",
                 dpi=200, bbox_inches='tight', facecolor='white')
     plt.show()
     print("Figure saved as planner_process.png")

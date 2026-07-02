@@ -20,12 +20,16 @@ Author: Da ZHAO
 Date: 2026
 """
 
+import sys
+import pathlib
+
 import numpy as np
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
-from Kinematics import robot_arm_kinematics
-import sympy as sp
 import pandas as pd
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
+from selective_em import robot_arm_kinematics
 
 # ============================================================
 # Control parameters
@@ -75,109 +79,6 @@ control_stages = [
     ("Open gripper",   3, s4_alpha, s4_alpha,       s4_beta,   s4_beta,   gripper_duration),
 ]
 
-# 10 coils data 3D
-params_list = [
-    np.array([-13.04945069, -4.41557229, 6.47376799, 0.12129096, 0.00466922, -0.0174842]),  # coil 1
-    np.array([-5.10083416, 13.54294901, 7.85474539, 0.05834654, -0.11165548, -0.01850546]),  # coil 2
-    np.array([4.05088788, 14.23365818, 6.44760956, -0.05903076, -0.11020417, -0.01488244]),  # coil 3
-    np.array([13.89011305, -0.06092074, 4.77365608, -0.12306086, -0.00085745, -0.01378161]), # coil 4
-    np.array([11.44363813, -9.40543896, 4.46367162, -0.06806179, 0.1024875, -0.01397152]),  # coil 5
-    np.array([-9.00577939, -12.78905365, 5.98650851, 0.06473315, 0.10618968, -0.0151172]),  # coil 6
-    np.array([0.92820081, 8.54965337, 8.72298349, -0.00381254, -0.08845466, -0.08874662]),   # coil 7
-    np.array([8.7302819, -4.90773115, 7.00109937, -0.07977306, 0.04481733, -0.08536032]),   # coil 8
-    np.array([-7.68962762, -6.83258326, 8.12112247, 0.07498008, 0.04542436, -0.08696975]),   # coil 9
-    np.array([2.35614001, -1.11370036, 14.00304846, -0.00722183, 0.00029277, -0.12482979])   # coil 10
-]
-
-num_coils = len(params_list)
-
-# Define the symbols
-m0, m1, m2, r0_0, r0_1, r0_2, X, Y, Z = sp.symbols('m0 m1 m2 r0_0 r0_1 r0_2 X Y Z')
-
-# Constants
-mu0 = 4 * sp.pi * 1e-7
-
-# Calculate displacement vector
-dx = X - r0_0
-dy = Y - r0_1
-dz = Z - r0_2
-
-# Calculate distance to the coordinate point
-r = sp.sqrt(dx**2 + dy**2 + dz**2) + 1e-9  # Add a small constant to avoid division by zero
-
-# Calculate dot product of displacement vector and magnetic dipole moment
-dot_product = m0 * dx + m1 * dy + m2 * dz
-
-# Calculate magnetic field components
-model_Bx = (mu0 / (4 * sp.pi)) * (3 * dx * dot_product / r**5 - m0 / r**3)
-model_By = (mu0 / (4 * sp.pi)) * (3 * dy * dot_product / r**5 - m1 / r**3)
-model_Bz = (mu0 / (4 * sp.pi)) * (3 * dz * dot_product / r**5 - m2 / r**3)
-
-# Convert the symbolic functions to numerical functions
-dipole_model_Bx = sp.lambdify((m0, m1, m2, r0_0, r0_1, r0_2, X, Y, Z), model_Bx, 'numpy')
-dipole_model_By = sp.lambdify((m0, m1, m2, r0_0, r0_1, r0_2, X, Y, Z), model_By, 'numpy')
-dipole_model_Bz = sp.lambdify((m0, m1, m2, r0_0, r0_1, r0_2, X, Y, Z), model_Bz, 'numpy')
-
-# Calculate the partial derivatives
-model_Bx_dx = sp.diff(model_Bx, X)
-model_Bx_dy = sp.diff(model_Bx, Y)
-model_Bx_dz = sp.diff(model_Bx, Z)
-model_By_dy = sp.diff(model_By, Y)
-model_By_dz = sp.diff(model_By, Z)
-model_Bz_dz = sp.diff(model_Bz, Z)
-
-# Convert the symbolic functions to numerical functions
-dipole_model_Bx_dx = sp.lambdify((m0, m1, m2, r0_0, r0_1, r0_2, X, Y, Z), model_Bx_dx, 'numpy')
-dipole_model_Bx_dy = sp.lambdify((m0, m1, m2, r0_0, r0_1, r0_2, X, Y, Z), model_Bx_dy, 'numpy')
-dipole_model_Bx_dz = sp.lambdify((m0, m1, m2, r0_0, r0_1, r0_2, X, Y, Z), model_Bx_dz, 'numpy')
-dipole_model_By_dy = sp.lambdify((m0, m1, m2, r0_0, r0_1, r0_2, X, Y, Z), model_By_dy, 'numpy')
-dipole_model_By_dz = sp.lambdify((m0, m1, m2, r0_0, r0_1, r0_2, X, Y, Z), model_By_dz, 'numpy')
-dipole_model_Bz_dz = sp.lambdify((m0, m1, m2, r0_0, r0_1, r0_2, X, Y, Z), model_Bz_dz, 'numpy')
-
-# Calculate the magnetic field and its partial derivatives at given points
-def calculate_B_and_derivatives(currents, X, Y, Z):
-    Bx_total = 0
-    By_total = 0
-    Bz_total = 0
-    Bx_dx_total = 0
-    Bx_dy_total = 0
-    Bx_dz_total = 0
-    By_dy_total = 0
-    By_dz_total = 0
-    Bz_dz_total = 0
-
-    # Loop over the coils
-    for i in range(num_coils):
-        # Get the coil parameters
-        params = params_list[i]
-        m0, m1, m2, r0_0, r0_1, r0_2 = params
-        # Calculate the magnetic field produced by this coil
-        Bx = dipole_model_Bx(m0, m1, m2, r0_0, r0_1, r0_2, X, Y, Z) * currents[i]
-        By = dipole_model_By(m0, m1, m2, r0_0, r0_1, r0_2, X, Y, Z) * currents[i]
-        Bz = dipole_model_Bz(m0, m1, m2, r0_0, r0_1, r0_2, X, Y, Z) * currents[i]
-
-        # Add to the total magnetic field
-        Bx_total += Bx
-        By_total += By
-        Bz_total += Bz
-
-        # Calculate the partial derivatives
-        Bx_dx = dipole_model_Bx_dx(m0, m1, m2, r0_0, r0_1, r0_2, X, Y, Z) * currents[i]
-        Bx_dy = dipole_model_Bx_dy(m0, m1, m2, r0_0, r0_1, r0_2, X, Y, Z) * currents[i]
-        Bx_dz = dipole_model_Bx_dz(m0, m1, m2, r0_0, r0_1, r0_2, X, Y, Z) * currents[i]
-        By_dy = dipole_model_By_dy(m0, m1, m2, r0_0, r0_1, r0_2, X, Y, Z) * currents[i]
-        By_dz = dipole_model_By_dz(m0, m1, m2, r0_0, r0_1, r0_2, X, Y, Z) * currents[i]
-        Bz_dz = dipole_model_Bz_dz(m0, m1, m2, r0_0, r0_1, r0_2, X, Y, Z) * currents[i]
-
-        # Add to the total partial derivatives
-        Bx_dx_total += Bx_dx
-        Bx_dy_total += Bx_dy
-        Bx_dz_total += Bx_dz
-        By_dy_total += By_dy
-        By_dz_total += By_dz
-        Bz_dz_total += Bz_dz
-
-    return np.array([Bx_total, By_total, Bz_total, Bx_dx_total, Bx_dy_total, Bx_dz_total, By_dy_total, By_dz_total])
 
 
 # ============================================================
@@ -437,10 +338,10 @@ if __name__ == '__main__':
                        'x2', 'y2', 'z2', 'Bx2', 'By2',
                        'x3', 'y3', 'z3', 'Bx3', 'By3']].tail().to_string(index=False))
 
-    # Save to CSV (same directory as this script)
-    import os
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    csv_path = os.path.join(script_dir, 'field_targets.csv')
+    # Save to CSV under the repo data/ directory
+    data_dir = pathlib.Path(__file__).resolve().parent.parent / "data"
+    data_dir.mkdir(exist_ok=True)
+    csv_path = data_dir / "field_targets.csv"
     df_targets.to_csv(csv_path, index=False)
     print(f"\nTargets saved to {csv_path}")
 
