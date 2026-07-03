@@ -54,6 +54,20 @@ GEAR = 50                 # gearbox reduction
 N_CYCLES = 6
 ARM_COLORS = ("#1f77b4", "#d62728")
 MOTOR_COLORS = ["#1f77b4", "#4c9be8", "#8ec5ff", "#d62728", "#f07470", "#ffa8a8"]
+PAPER_DPI = 300
+
+
+PAPER_STYLE = {
+    "font.size": 8,
+    "axes.labelsize": 8,
+    "axes.titlesize": 8,
+    "xtick.labelsize": 7,
+    "ytick.labelsize": 7,
+    "legend.fontsize": 7,
+    "figure.titlesize": 9,
+    "axes.linewidth": 0.7,
+    "lines.linewidth": 1.5,
+}
 
 
 # ------------------------------------------------------------------ geometry --
@@ -180,35 +194,47 @@ def _draw_arm(ax, motors, ai):
         ax.quiver(p[0], p[1], p[2] + 0.008, 0, 0, 0.011, color="k", lw=1,
                   arrow_length_ratio=0.35)
     for k, p in enumerate((m1, m2, m3)):
-        ax.text(p[0] + 0.004, p[1], p[2] + 0.013, f"M{3*ai+k+1}", fontsize=10,
+        ax.text(p[0] + 0.004, p[1], p[2] + 0.013, f"M{3*ai+k+1}", fontsize=11,
                 weight="bold", color=col)
 
 
 def fig_layout(motors, coils, out):
     from matplotlib.lines import Line2D
-    fig = plt.figure(figsize=(9, 7))
-    ax = fig.add_subplot(111, projection="3d")
-    for c in coils:                                    # coils as faint solenoids
-        mo = c[:3] / (np.linalg.norm(c[:3]) + 1e-9)
-        _cylinder(ax, c[3:6] - mo * 0.011, c[3:6] + mo * 0.011, 0.013, "0.72",
-                  alpha=0.3, cap=False)
-    _draw_arm(ax, motors[0:3], 0)
-    _draw_arm(ax, motors[3:6], 1)
-    ax.set_xlabel("x (m)"); ax.set_ylabel("y (m)"); ax.set_zlabel("z (m)")
-    ax.set_xlim(-0.075, 0.075); ax.set_ylim(-0.075, 0.075); ax.set_zlim(-0.11, -0.01)
-    ax.set_box_aspect((1, 1, 0.7)); ax.view_init(elev=26, azim=-60)
-    legend = [Line2D([0], [0], marker="o", color="w", markerfacecolor=ARM_COLORS[0],
-                     markersize=11, label="Arm 1 motors (M1-M3)"),
-              Line2D([0], [0], marker="o", color="w", markerfacecolor=ARM_COLORS[1],
-                     markersize=11, label="Arm 2 motors (M4-M6)"),
-              Line2D([0], [0], color="0.6", lw=4, label="links"),
-              Line2D([0], [0], marker="s", color="w", markerfacecolor="0.35",
-                     markersize=10, label="base"),
-              Line2D([0], [0], color="0.72", lw=6, alpha=0.5, label="coils (8)")]
-    ax.legend(handles=legend, loc="upper left", fontsize=9)
-    ax.set_title("Dual-arm platform: 6 motors (base, joints, links, gripper), 8 coils\n"
-                 "(12 coils needed for full actuation)")
-    fig.tight_layout(); fig.savefig(out, dpi=130, bbox_inches="tight"); plt.close(fig)
+    layout_style = dict(PAPER_STYLE)
+    layout_style.update({
+        "font.size": 12,
+        "axes.labelsize": 12,
+        "axes.titlesize": 12,
+        "xtick.labelsize": 10.5,
+        "ytick.labelsize": 10.5,
+        "legend.fontsize": 10.5,
+        "figure.titlesize": 13.5,
+    })
+    with plt.rc_context(layout_style):
+        fig = plt.figure(figsize=(3.55, 3.25))
+        ax = fig.add_subplot(111, projection="3d")
+        for c in coils:                                # coils as faint solenoids
+            mo = c[:3] / (np.linalg.norm(c[:3]) + 1e-9)
+            _cylinder(ax, c[3:6] - mo * 0.011, c[3:6] + mo * 0.011, 0.013, "0.72",
+                      alpha=0.26, cap=False)
+        _draw_arm(ax, motors[0:3], 0)
+        _draw_arm(ax, motors[3:6], 1)
+        ax.set_xlabel("$x$ (m)", labelpad=-2)
+        ax.set_ylabel("$y$ (m)", labelpad=-2)
+        ax.set_zlabel("$z$ (m)", labelpad=-2)
+        ax.tick_params(axis="both", which="major", pad=-2)
+        ax.set_xlim(-0.075, 0.075); ax.set_ylim(-0.075, 0.075); ax.set_zlim(-0.11, -0.01)
+        ax.set_box_aspect((1, 1, 0.7)); ax.view_init(elev=26, azim=-60)
+        legend = [Line2D([0], [0], marker="o", color="w", markerfacecolor=ARM_COLORS[0],
+                         markersize=9, label="Arm 1: M1-M3"),
+                  Line2D([0], [0], marker="o", color="w", markerfacecolor=ARM_COLORS[1],
+                         markersize=9, label="Arm 2: M4-M6"),
+                  Line2D([0], [0], color="0.72", lw=6, alpha=0.55, label="8 coils")]
+        ax.legend(handles=legend, loc="upper left", frameon=True, framealpha=0.88,
+                  borderpad=0.25, handlelength=1.2)
+        fig.subplots_adjust(left=-0.07, right=1.02, bottom=-0.03, top=0.99)
+        fig.savefig(out, dpi=PAPER_DPI, bbox_inches="tight", pad_inches=0.01)
+        plt.close(fig)
 
 
 def fig_winding(W, curr, out):
@@ -285,18 +311,30 @@ def fig_sequence(A, out):
             for j in range(n):
                 out_all[j].append((sol.y[j][k]) / GEAR * 180 / math.pi)  # deg output
         phi = sol.y[:n, -1].copy(); w = sol.y[n:, -1].copy(); t0 += Tseg
-    fig, ax = plt.subplots(figsize=(12, 6))
-    for j in range(n):
-        ax.plot(t_all, out_all[j], color=MOTOR_COLORS[j], lw=2, label=f"Motor {j+1}")
-    for m in range(n):
-        ax.axvspan(m * Tseg, (m + 1) * Tseg, color=MOTOR_COLORS[m], alpha=0.06)
-        ax.text((m + 0.5) * Tseg, ax.get_ylim()[1], f"drive M{m+1}", ha="center",
-                va="top", fontsize=9, color=MOTOR_COLORS[m])
-    ax.set_xlabel("time (s)"); ax.set_ylabel("output-joint angle (deg)")
-    ax.set_title("Sequential selective actuation: each output joint advances only "
-                 "in its own segment\n(input magnet rotation / gearbox 1:50)")
-    ax.legend(ncol=6, fontsize=9, loc="lower right"); ax.grid(True, ls=":", lw=0.5)
-    fig.tight_layout(); fig.savefig(out, dpi=130, bbox_inches="tight"); plt.close(fig)
+    with plt.rc_context(PAPER_STYLE):
+        fig, ax = plt.subplots(figsize=(3.55, 2.25))
+        for j in range(n):
+            ax.plot(t_all, out_all[j], color=MOTOR_COLORS[j], lw=1.55,
+                    label=f"M{j+1}")
+        for m in range(n):
+            ax.axvspan(m * Tseg, (m + 1) * Tseg, color=MOTOR_COLORS[m],
+                       alpha=0.045, lw=0)
+            ax.axvline(m * Tseg, color="0.82", lw=0.45, zorder=0)
+            ax.text((m + 0.5) * Tseg, 30.3, f"M{m+1}", ha="center", va="top",
+                    fontsize=6.7, color=MOTOR_COLORS[m])
+        ax.axvline(n * Tseg, color="0.82", lw=0.45, zorder=0)
+        ax.set_ylim(-1.2, 30.8)
+        ax.set_yticks([0, 15, 30])
+        ax.set_xlim(0, n * Tseg)
+        ax.set_xlabel("time (s)")
+        ax.set_ylabel("angle (deg)")
+        ax.grid(True, ls=":", lw=0.45, color="0.82")
+        ax.legend(ncol=3, loc="lower right", frameon=True, framealpha=0.9,
+                  borderpad=0.2, handlelength=1.3, columnspacing=0.7)
+        ax.tick_params(direction="out", length=2.5, width=0.6)
+        fig.subplots_adjust(left=0.14, right=0.995, bottom=0.20, top=0.98)
+        fig.savefig(out, dpi=PAPER_DPI, bbox_inches="tight", pad_inches=0.01)
+        plt.close(fig)
 
 
 def _winding_selectable(motors, idx):
