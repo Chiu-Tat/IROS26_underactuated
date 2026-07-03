@@ -20,7 +20,7 @@ from scipy.optimize import minimize
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 from selective_em import (
-    EXPERIMENT_COILS, map_i2b, extract_map_i2b, get_cfw_polytope,
+    EXPERIMENT_COILS, map_i2b, extract_map_i2b,
 )
 from selective_em.control import (
     rotating_field_target, precompute_field_matrices, plot_optimization_results,
@@ -35,33 +35,33 @@ CONTROL_FREQUENCY = 20             # Hz
 CONTROL_PERIOD = 1.0 / CONTROL_FREQUENCY
 TARGET_POSITION = (0.0, -0.03, 0.0)
 CFW_RADIUS = 0.057                 # field radius used to shrink the CFW
-CFW_SAMPLES = 6000
 COILS = EXPERIMENT_COILS
 N_COILS = len(COILS)
 ACTIVE_COIL_NUMBERS = [2, 3, 7]    # 1-based coil labels for the CSV columns
 
 
 def selectivity_constraint():
-    """Build the CFW-shrinking selectivity constraint ``N i <= d`` at the target."""
+    """Exact CFW-shrinking selectivity constraint ``i^T Q i <= r^2`` at the target.
+
+    The selective constraint is exactly ``||A(p) i|| <= CFW_RADIUS`` -- a single
+    convex quadratic that SLSQP handles directly, replacing the many-facet
+    polytope approximation ``N i <= d`` (Algorithm 1) with no loss of accuracy.
+    """
     target_points = [{
         "X": TARGET_POSITION[0], "Y": TARGET_POSITION[1], "Z": TARGET_POSITION[2],
         "Bx": True, "By": True, "Bz": None,
         "Bx_dx": None, "Bx_dy": None, "Bx_dz": None, "By_dy": None, "By_dz": None,
     }]
     A = extract_map_i2b(target_points) @ map_i2b(target_points, COILS)
-    Q = A.T @ A
-    hull, _, _, _ = get_cfw_polytope(Q, CFW_RADIUS ** 2, CURRENT_LIMIT,
-                                     CFW_SAMPLES, plot_verbose=False)
-    N = hull.equations[:, :-1]
-    d = -hull.equations[:, -1]
-    return N, d
+    return A.T @ A                         # Q; the constraint is i^T Q i <= r^2
 
 
 def run_time_series_optimization():
     """Constrained (SLSQP) selective solve at every control step."""
     print("Computing selectivity constraint...")
-    N, d = selectivity_constraint()
-    print(f"Constraint N shape {N.shape}, d shape {d.shape}")
+    Q = selectivity_constraint()
+    r2 = CFW_RADIUS ** 2
+    print(f"Exact quadratic selectivity constraint i^T Q i <= {r2:.3e}")
 
     time_points = np.arange(0, SIMULATION_DURATION + CONTROL_PERIOD, CONTROL_PERIOD)
     results = {k: [] for k in ("time", "currents", "optimization_time", "success",
@@ -80,7 +80,8 @@ def run_time_series_optimization():
         constraints = [
             {"type": "eq", "fun": lambda x, A=A_matrix, b=target_vector: A @ x - b},
             {"type": "ineq", "fun": lambda x: CURRENT_LIMIT - np.abs(x)},
-            {"type": "ineq", "fun": lambda x: d - N @ x},
+            {"type": "ineq", "fun": lambda x, Q=Q, r2=r2: r2 - x @ Q @ x,
+             "jac": lambda x, Q=Q: -2.0 * (Q @ x)},
         ]
         t0 = time.time()
         result = minimize(lambda x: np.sum(x ** 2), currents_guess, method="SLSQP",
@@ -98,7 +99,7 @@ def run_time_series_optimization():
         results["rms_field_error"].append(np.sqrt(np.mean(field_errors ** 2)))
         results["max_current"].append(np.max(np.abs(result.x)))
         results["convex_constraint_violations"].append(
-            np.max(np.maximum(0, N @ result.x - d)))
+            max(0.0, float(result.x @ Q @ result.x) - r2))
         if result.success:
             currents_guess = result.x
 

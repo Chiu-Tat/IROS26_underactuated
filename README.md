@@ -48,10 +48,10 @@ archive/        pre-refactor exploration scripts (unmaintained; see archive/READ
 | Paper term | Code |
 |---|---|
 | Actuation matrix `A(p)` | `field_model.map_i2b` (+ `extract_map_i2b`) |
-| Magnetic-Feasible Workspace (MFW) | `workspace.get_mfw` |
-| Minimal Supporting Distance (MSD) | `workspace.minimal_supporting_distance` |
-| Current-Feasible Workspace (CFW), **Algorithm 1** | `workspace.get_cfw_polytope` |
-| MFW from a general CFW, **Algorithm 2** | `workspace.transform_and_extract_facets` |
+| Magnetic-Feasible Workspace (MFW) | `workspace.get_mfw` (box) / `workspace.mfw_support` (selective) |
+| Minimal Supporting Distance (MSD) | `workspace.minimal_supporting_distance`, `workspace.mfw_support` (bracketed) |
+| Support-function MFW/MSD, **revised Algorithm** (replaces old Alg. 1–2) | `workspace.mfw_support`, `workspace.cfw_support`, `workspace.mfw_encloses_circle` |
+| CFW polytope / MFW-from-CFW, **old Alg. 1–2** (superseded; kept for review) | `workspace.get_cfw_polytope`, `workspace.transform_and_extract_facets` |
 | Omni-Actuation Region (OAR) | `feasibility.in_oar` |
 | Influence Region (IR) + selectivity theorem | `feasibility.is_selectively_actuable` |
 | Dual-layer axial A*, **Algorithm 3** | `planner.a_star` |

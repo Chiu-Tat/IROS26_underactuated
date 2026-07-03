@@ -17,7 +17,7 @@ from itertools import combinations
 import numpy as np
 from scipy.linalg import null_space
 from scipy.spatial import ConvexHull
-from pypoman import compute_polytope_vertices
+from scipy.optimize import minimize
 
 from .coils import DEFAULT_COILS
 from .field_model import map_i2b, extract_map_i2b
@@ -117,6 +117,7 @@ def transform_and_extract_facets(A, G, K):
     Enumerate CFW vertices, map them through ``A`` (``w = A . v``), and take the
     convex hull. Returns the MFW H-representation ``(N, d_vec)``.
     """
+    from pypoman import compute_polytope_vertices  # heavy (cddlib); old path only
     vertices = np.array(compute_polytope_vertices(G, K))
     transformed_vertices = np.dot(vertices, A.T)
     hull = ConvexHull(transformed_vertices)
@@ -218,3 +219,119 @@ def get_cfw_polytope(Q, r, i_abs_max, m, plot_verbose=False,
                                       i_max, Q, r)
 
     return hull, h_representation, remaining_points, deleted_points
+
+
+# ---------------------------------------------------------------------------
+# Support-function MFW/CFW (improved replacement for Algorithms 1 & 2).
+#
+# The CFW is the *slab* {i : ||A_act i|| <= r} intersected with the current box
+# {||i||_inf <= i_max}. We never build it as a polytope. Instead we evaluate the
+# support function of the target MFW directly:
+#
+#     h_MFW(u) = max_{i in CFW} u . (A_target i) = h_CFW(A_target^T u),
+#     h_CFW(c) = max { c . i : ||A_act i|| <= r,  ||i||_inf <= i_max },
+#
+# a small convex QCQP in the current vector. Sampling K unit directions u in the
+# 2-D field plane yields, per direction, a supporting half-plane (outer bound)
+# and a genuine MFW point A_target i* (inner bound), giving a deterministic,
+# two-sided, provably-conservative bracket on the MSD:
+#
+#     inradius(conv{A_target i*_k}) <= MSD <= min_k h(u_k).
+#
+# This is deterministic for any coil count, needs no Q-regularisation and no
+# vertex enumeration (no cddlib), and supports early-exit selectivity tests.
+# ---------------------------------------------------------------------------
+
+
+def cfw_support(c, Q, r, i_max, x0=None):
+    """Support value ``h_CFW(c) = max c.i`` over the CFW, with its maximiser.
+
+    The CFW is ``{i : i^T Q i <= r^2, ||i||_inf <= i_max}`` where ``Q = A_act^T
+    A_act`` (rank-2, so the ``i^T Q i <= r^2`` set is an unbounded slab that the
+    box makes bounded). Solved as a small convex QCQP with SLSQP; ``x0`` warm-
+    starts the solve (``i = 0`` is always feasible). Returns ``(value, i_star)``.
+    """
+    c = np.asarray(c, dtype=float)
+    n = Q.shape[0]
+    r2 = float(r) ** 2
+
+    # Closed-form shortcut: if the box optimum already satisfies the slab, the
+    # quadratic constraint is inactive and no solve is needed.
+    i_box = float(i_max) * np.sign(c)
+    if float(i_box @ Q @ i_box) <= r2:
+        return float(c @ i_box), i_box
+
+    if x0 is None:
+        x0 = np.zeros(n)
+    res = minimize(
+        lambda i: -float(c @ i), x0, jac=lambda i: -c, method="SLSQP",
+        bounds=[(-i_max, i_max)] * n,
+        constraints=[{
+            "type": "ineq",
+            "fun": lambda i: r2 - float(i @ Q @ i),
+            "jac": lambda i: -2.0 * (Q @ i),
+        }],
+        options={"ftol": 1e-12, "maxiter": 200},
+    )
+    return -float(res.fun), res.x
+
+
+def mfw_support(A_target, A_act, r, i_max, n_dirs=180):
+    """MFW of ``A_target . CFW`` via support sampling (replaces Algorithms 1+2).
+
+    ``A_act`` shapes the CFW (slab radius ``r`` plus current box ``i_max``);
+    ``A_target`` maps it onto the motor being tested. Returns a dict with:
+
+        ``N, d``          -- outer H-representation ``N B <= d`` (unit rows),
+        ``inner_points``  -- genuine MFW points (inner approximation),
+        ``msd``           -- ``min_k h(u_k)`` (deterministic support MSD),
+        ``msd_lower``     -- inradius of the inner hull (guaranteed lower bound),
+        ``msd_upper``     -- ``msd`` (guaranteed upper bound).
+
+    ``msd_lower <= true MSD <= msd_upper`` always, and both converge to the true
+    MSD as ``n_dirs`` grows (gap ~ O(1/n_dirs^2)).
+    """
+    Q = A_act.T @ A_act
+    thetas = np.linspace(0.0, 2.0 * np.pi, n_dirs, endpoint=False)
+    U = np.column_stack([np.cos(thetas), np.sin(thetas)])   # (K, 2) unit dirs
+    H = np.empty(n_dirs)
+    inner = np.empty((n_dirs, 2))
+    x0 = None
+    for k in range(n_dirs):
+        h, i_star = cfw_support(A_target.T @ U[k], Q, r, i_max, x0)
+        x0 = i_star                          # warm-start the next direction
+        H[k] = h
+        inner[k] = A_target @ i_star
+    msd_upper = float(np.min(H))             # outer polygon inradius
+
+    # Inner (inscribed) polygon inradius: a guaranteed lower bound on the MSD.
+    msd_lower = 0.0
+    if np.ptp(inner, axis=0).min() > 0:
+        try:
+            hull = ConvexHull(inner)
+            # scipy hull eqs are unit-normalised: n.x + b <= 0 inside, so the
+            # distance from the origin to each facet is -b (>0 if origin inside).
+            msd_lower = float(np.min(-hull.equations[:, -1]))
+        except Exception:
+            msd_lower = 0.0
+
+    return {
+        "N": U, "d": H.reshape(-1, 1), "inner_points": inner,
+        "msd": msd_upper, "msd_lower": max(msd_lower, 0.0), "msd_upper": msd_upper,
+    }
+
+
+def mfw_encloses_circle(A_target, A_act, r, i_max, rho, n_dirs=180):
+    """Fast selectivity test: does ``A_target . CFW`` enclose the radius-``rho``
+    circle? Evaluates the support MSD with early-exit -- the first direction with
+    ``h(u_k) < rho`` proves ``MSD < rho`` and returns ``False`` immediately.
+    """
+    Q = A_act.T @ A_act
+    thetas = np.linspace(0.0, 2.0 * np.pi, n_dirs, endpoint=False)
+    x0 = None
+    for theta in thetas:
+        u = np.array([np.cos(theta), np.sin(theta)])
+        h, x0 = cfw_support(A_target.T @ u, Q, r, i_max, x0)
+        if h < rho:                          # MSD <= h < rho: cannot enclose
+            return False
+    return True

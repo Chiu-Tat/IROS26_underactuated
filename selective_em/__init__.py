@@ -27,6 +27,7 @@ from .workspace import (
     hyperplane_shifting_method, get_mfw, get_cfw_polytope,
     transform_and_extract_facets, minimal_supporting_distance,
     remove_duplicate_rows,
+    cfw_support, mfw_support, mfw_encloses_circle,
 )
 from .kinematics import robot_arm_kinematics
 from .feasibility import (
@@ -42,6 +43,7 @@ __all__ = [
     "hyperplane_shifting_method", "get_mfw", "get_cfw_polytope",
     "transform_and_extract_facets", "minimal_supporting_distance",
     "remove_duplicate_rows",
+    "cfw_support", "mfw_support", "mfw_encloses_circle",
     "robot_arm_kinematics",
     "in_oar", "is_selectively_actuable", "point_in_polytope",
     "a_star", "manhattan", "extract_keypoints",

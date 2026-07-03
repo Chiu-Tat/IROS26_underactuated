@@ -16,7 +16,7 @@ import numpy as np
 
 from .coils import DEFAULT_COILS
 from .field_model import map_i2b, extract_map_i2b
-from .workspace import get_mfw, get_cfw_polytope, transform_and_extract_facets
+from .workspace import get_mfw, mfw_encloses_circle
 
 
 def _single_target(position):
@@ -37,7 +37,7 @@ def in_oar(position, b_min, i_min, i_max, coils=DEFAULT_COILS):
 
 def is_selectively_actuable(actuated_position, other_positions, b_min_actuated,
                             other_b_mins, i_min, i_max, coils=DEFAULT_COILS,
-                            m=1000):
+                            n_dirs=180):
     """Selectivity theorem: actuated motor in its OAR and no other in its IR.
 
     ``b_min_actuated`` is the actuated motor's minimum actuation radius (also the
@@ -48,31 +48,29 @@ def is_selectively_actuable(actuated_position, other_positions, b_min_actuated,
         return False
     return not any(
         _in_influence_region(other, actuated_position, i_max, b_min_actuated,
-                             b_min_other, coils, m)
+                             b_min_other, coils, n_dirs)
         for other, b_min_other in zip(other_positions, other_b_mins)
     )
 
 
 def _in_influence_region(target_position, actuated_position, i_max, r_actuated,
-                         b_min_target, coils, m):
+                         b_min_target, coils, n_dirs=180):
     """True if ``target_position`` is inside the actuated motor's IR.
 
-    The actuated motor's CFW is the ellipsoid ``i^T Q i <= r_actuated^2``
-    intersected with the current box; its MFW is transformed onto the target and
-    the target is "influenced" when the target's MSD reaches ``b_min_target``.
+    The actuated motor's CFW is the slab ``||A_act i|| <= r_actuated`` intersected
+    with the current box; the target is "influenced" when the target's MFW under
+    that CFW still encloses the target's ``b_min_target`` circle. Uses the
+    support-function test (deterministic, early-exit) instead of the old
+    sampling/vertex-enumeration polytope pipeline.
     """
     actuated_tp = _single_target(actuated_position)
-    A = extract_map_i2b(actuated_tp) @ map_i2b(actuated_tp, coils)
-    Q = A.T @ A
-    hull, _, _, _ = get_cfw_polytope(Q, r_actuated ** 2, i_max, m,
-                                     plot_verbose=False)
-    G = hull.equations[:, :-1]
-    k = -hull.equations[:, -1]
+    A_act = extract_map_i2b(actuated_tp) @ map_i2b(actuated_tp, coils)
 
     target_tp = _single_target(target_position)
     A_target = extract_map_i2b(target_tp) @ map_i2b(target_tp, coils)
-    _, d_target = transform_and_extract_facets(A_target, G, k)
-    return float(np.min(d_target)) >= b_min_target
+
+    return mfw_encloses_circle(A_target, A_act, r_actuated, i_max,
+                               b_min_target, n_dirs=n_dirs)
 
 
 def point_in_polytope(point, N, d):

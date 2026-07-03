@@ -61,6 +61,42 @@ def plot_polytope_2d(N, d, color="lightblue", alpha=0.5, radius=0.03):
     plt.show()
 
 
+def plot_mfw_2d(boundary_points, color="lightblue", alpha=0.5, radius=0.03,
+                msd=None):
+    """Plot a 2D MFW from ordered boundary points (support-function output).
+
+    ``boundary_points`` are the ``A_target i*(u_k)`` returned by
+    :func:`selective_em.workspace.mfw_support`, already ordered by direction
+    angle, so they trace the MFW boundary directly -- no vertex enumeration.
+    """
+    pts = np.asarray(boundary_points)
+    fig, ax = plt.subplots(figsize=(6, 6))
+    ax.grid(True, which="both", linestyle="--", linewidth=0.5)
+    ax.set_aspect("equal", adjustable="box")
+
+    x_min, x_max = pts[:, 0].min(), pts[:, 0].max()
+    y_min, y_max = pts[:, 1].min(), pts[:, 1].max()
+    max_range = max(x_max - x_min, y_max - y_min, 2 * radius)
+    xc, yc = (x_max + x_min) / 2, (y_max + y_min) / 2
+    ax.set_xlim(xc - max_range / 2 - 0.01, xc + max_range / 2 + 0.01)
+    ax.set_ylim(yc - max_range / 2 - 0.01, yc + max_range / 2 + 0.01)
+    ax.set_xlabel("X")
+    ax.set_ylabel("Y")
+
+    closed = np.vstack([pts, pts[0]])
+    ax.fill(closed[:, 0], closed[:, 1], color=color, alpha=alpha,
+            label="Feasible Region (MFW)")
+    ax.plot(closed[:, 0], closed[:, 1], "k-", linewidth=1.5)
+
+    circle = plt.Circle((0, 0), radius, fill=False, ec="red", linewidth=2,
+                        label="Minimal actuation circle")
+    ax.add_patch(circle)
+    if msd is not None:
+        ax.set_title(f"MSD = {msd:.4f}  (circle r = {radius})")
+    ax.legend(loc="upper right", fontsize=13)
+    plt.show()
+
+
 def _ellipse_points(Q, r, dim):
     """Sample the ellipsoid ``i^T Q i = r`` surface for plotting (2D or 3D)."""
     eigenvals, eigenvecs = np.linalg.eigh(Q)
