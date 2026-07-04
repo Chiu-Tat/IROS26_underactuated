@@ -30,6 +30,7 @@ np.seterr(all="ignore")
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import matplotlib.patheffects as pe
 from scipy.integrate import solve_ivp
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -55,6 +56,30 @@ N_CYCLES = 6
 ARM_COLORS = ("#1f77b4", "#d62728")
 MOTOR_COLORS = ["#1f77b4", "#4c9be8", "#8ec5ff", "#d62728", "#f07470", "#ffa8a8"]
 PAPER_DPI = 300
+
+# Coil profile for the layout drawing only (magnetics stay in
+# selective_em.coils). Real core/winding are Ø45/Ø105 mm, 180/120 mm long; the
+# layout draws a shortened, slightly slimmed solenoid (exposed core tip +
+# winding barrel + open bore) so all eight coils render as complete, distinct
+# bodies that fit fully inside the frame instead of being cropped at its edges.
+CORE_R, WIND_R = 0.019, 0.036
+CORE_TIP, WIND_LEN = 0.010, 0.040   # exposed core tip + winding barrel length
+COIL_CU, COIL_CU_EDGE = "#b86b45", "#5b2c1c"
+CORE_COL, CORE_EDGE = "#d8d5ca", "#4d4d4d"
+# coil number -> (unit axis toward the workspace, core-top position (m));
+# nominal mounting poses of the 10-coil array (body extends along -axis)
+COIL_POSES = {
+    1:  ((-1.0, 0.0, 0.0),                (0.085, 0.0, 0.0)),
+    2:  ((-0.5, 0.866025, 0.0),           (0.0425, -0.073612, 0.0)),
+    3:  ((0.5, 0.866025, 0.0),            (-0.0425, -0.073612, 0.0)),
+    4:  ((1.0, 0.0, 0.0),                 (-0.085, 0.0, 0.0)),
+    5:  ((0.5, -0.866025, 0.0),           (-0.0425, 0.073612, 0.0)),
+    6:  ((-0.5, -0.866025, 0.0),          (0.0425, 0.073612, 0.0)),
+    7:  ((0.0, 0.766045, 0.642787),       (0.0, -0.0651138, -0.0546369)),
+    8:  ((0.663414, -0.383022, 0.642787), (-0.0563902, 0.0325569, -0.0546369)),
+    9:  ((-0.663414, -0.383022, 0.642787), (0.0563902, 0.0325569, -0.0546369)),
+    10: ((0.0, 0.0, 1.0),                 (0.0, 0.0, -0.085)),
+}
 
 
 PAPER_STYLE = {
@@ -164,6 +189,51 @@ def _cylinder(ax, p0, p1, r, color, n=24, alpha=1.0, cap=True):
                             shade=True)
 
 
+def _annulus(ax, center, axis, r0, r1, color, alpha=1.0, n=48):
+    c = np.asarray(center, float)
+    _, u, v = _frame(axis)
+    th = np.linspace(0, 2 * np.pi, n); rr = np.array([r0, r1])
+    RR, TH = np.meshgrid(rr, th)
+    X = c[0] + RR * np.cos(TH) * u[0] + RR * np.sin(TH) * v[0]
+    Y = c[1] + RR * np.cos(TH) * u[1] + RR * np.sin(TH) * v[1]
+    Z = c[2] + RR * np.cos(TH) * u[2] + RR * np.sin(TH) * v[2]
+    ax.plot_surface(X, Y, Z, color=color, alpha=alpha, linewidth=0, shade=True)
+
+
+def _ring(ax, center, axis, r, color, lw=0.5, alpha=1.0, n=72):
+    c = np.asarray(center, float)
+    _, u, v = _frame(axis)
+    th = np.linspace(0, 2 * np.pi, n)
+    ax.plot(c[0] + r * (np.cos(th) * u[0] + np.sin(th) * v[0]),
+            c[1] + r * (np.cos(th) * u[1] + np.sin(th) * v[1]),
+            c[2] + r * (np.cos(th) * u[2] + np.sin(th) * v[2]),
+            color=color, lw=lw, alpha=alpha)
+
+
+def _draw_coil(ax, num, view, alpha=0.92):
+    """Complete schematic solenoid for coil `num`: exposed iron core tip, copper
+    winding barrel with an open bore, and front/rear end rings."""
+    axis, top = COIL_POSES[num]
+    axis = np.asarray(axis, float); top = np.asarray(top, float)
+    head = top - CORE_TIP * axis          # winding front face
+    back = head - WIND_LEN * axis         # winding rear face
+    core = [(lambda: _cylinder(ax, head, top, CORE_R, CORE_COL, alpha=alpha)),
+            (lambda: _ring(ax, top, axis, CORE_R, CORE_EDGE, lw=0.6, alpha=alpha))]
+    front = [(lambda: _annulus(ax, head, axis, CORE_R, WIND_R, COIL_CU, alpha=alpha)),
+             (lambda: _ring(ax, head, axis, WIND_R, COIL_CU_EDGE, lw=0.7, alpha=alpha)),
+             (lambda: _ring(ax, head, axis, CORE_R, COIL_CU_EDGE, lw=0.5, alpha=alpha))]
+    barrel = [(lambda: _cylinder(ax, back, head, WIND_R, COIL_CU, alpha=alpha, cap=False))]
+    rear = [(lambda: _annulus(ax, back, axis, CORE_R, WIND_R, COIL_CU, alpha=alpha)),
+            (lambda: _ring(ax, back, axis, WIND_R, COIL_CU_EDGE, lw=0.7, alpha=alpha))]
+    # painter's algorithm within the coil: far parts first
+    if np.dot(axis, view) > 0:            # front face toward the camera
+        parts = rear + barrel + front + core
+    else:                                 # rear face toward the camera
+        parts = core + front + barrel + rear
+    for draw in parts:
+        draw()
+
+
 def _box(ax, center, sx, sy, sz, color, alpha=1.0):
     from mpl_toolkits.mplot3d.art3d import Poly3DCollection
     cx, cy, cz = center
@@ -176,64 +246,121 @@ def _box(ax, center, sx, sy, sz, color, alpha=1.0):
 
 
 def _draw_arm(ax, motors, ai):
+    """Draw one 3-motor arm (base, links, joint magnets, gripper). Labels are
+    added by `_label_motors` so they never overlap the geometry."""
+    from matplotlib.colors import to_rgb
     m1, m2, m3 = motors
     z = np.array([0, 0, 1.0]); col = ARM_COLORS[ai]
-    _box(ax, (m1[0], m1[1], m1[2] - 0.010), 0.022, 0.022, 0.008, "0.35")  # base
-    _cylinder(ax, (m1[0], m1[1], m1[2] - 0.006), m1, 0.005, "0.5")        # pillar
-    _cylinder(ax, m1, m2, 0.0035, "0.6")                                   # link 1
-    _cylinder(ax, m2, m3, 0.0035, "0.6")                                   # link 2
+    link_col = tuple(0.40 * c + 0.60 for c in to_rgb(col))  # pale arm tint
+    _box(ax, (m1[0], m1[1], m1[2] - 0.010), 0.024, 0.024, 0.008, "0.35")  # base
+    _cylinder(ax, (m1[0], m1[1], m1[2] - 0.006), m1, 0.006, "0.5")        # pillar
+    _cylinder(ax, m1, m2, 0.0060, link_col)                                # link 1
+    _cylinder(ax, m2, m3, 0.0060, link_col)                                # link 2
     for p in (m1, m2):                                                     # joint motors
-        _cylinder(ax, p - z * 0.005, p + z * 0.005, 0.007, col)
-    _cylinder(ax, m3 - z * 0.004, m3 + z * 0.004, 0.006, col)             # gripper hub
+        _cylinder(ax, p - z * 0.006, p + z * 0.006, 0.0085, col)
+    _cylinder(ax, m3 - z * 0.005, m3 + z * 0.005, 0.0072, col)            # gripper hub
     d = m3 - m2; d = d / (np.linalg.norm(d) + 1e-9)
     perp = np.array([-d[1], d[0], 0.0])
     for s in (1, -1):                                                      # gripper prongs
-        root = m3 + perp * s * 0.004
-        _cylinder(ax, root, root + d * 0.011 + perp * s * 0.003, 0.0015, col)
-    for p in (m1, m2, m3):                                                 # rotation axes
-        ax.quiver(p[0], p[1], p[2] + 0.008, 0, 0, 0.011, color="k", lw=1,
-                  arrow_length_ratio=0.35)
-    for k, p in enumerate((m1, m2, m3)):
-        ax.text(p[0] + 0.004, p[1], p[2] + 0.013, f"M{3*ai+k+1}", fontsize=11,
-                weight="bold", color=col)
+        root = m3 + perp * s * 0.005
+        _cylinder(ax, root, root + d * 0.013 + perp * s * 0.004, 0.0018, col)
 
 
-def fig_layout(motors, coils, out):
-    from matplotlib.lines import Line2D
+def _label_motors(ax, motors, fan, lift=0.030, spread=0.016, fs=13):
+    """Leader-lined M-labels fanned out of the arm cluster so each sits clear of
+    the geometry. `fan[k]` is the (dx, dy) offset direction for motor k."""
+    halo = [pe.withStroke(linewidth=2.6, foreground="white")]
+    for k, p in enumerate(motors):
+        col = ARM_COLORS[0 if k < 3 else 1]
+        dx, dy = fan[k]
+        q = np.array([p[0] + dx * spread, p[1] + dy * spread, p[2] + lift])
+        ax.plot([p[0], q[0]], [p[1], q[1]], [p[2], q[2]], color=col, lw=0.9,
+                alpha=0.85, zorder=60)
+        ax.scatter([p[0]], [p[1]], [p[2]], s=8, color=col, zorder=61)
+        t = ax.text(q[0], q[1], q[2], f"M{k+1}", fontsize=fs, weight="bold",
+                    color=col, ha="center", va="center", zorder=62)
+        t.set_path_effects(halo)
+
+
+def _clean3d(ax):
+    """Strip ticks, panes, grid and axis lines for the arm-detail panel."""
+    ax.set_xticks([]); ax.set_yticks([]); ax.set_zticks([])
+    for a in (ax.xaxis, ax.yaxis, ax.zaxis):
+        a.pane.set_visible(False); a.line.set_visible(False)
+    ax.grid(False)
+
+
+def _panel_arms(ax, motors):
+    """Panel (a): the two arms zoomed in, with per-motor leader labels."""
+    ax.computed_zorder = False
+    _draw_arm(ax, motors[0:3], 0)
+    _draw_arm(ax, motors[3:6], 1)
+    fan = {0: (0.55, 1.05), 1: (0.95, -0.65), 2: (0.15, 1.15),
+           3: (-0.55, 1.05), 4: (-1.25, 0.15), 5: (-0.15, -1.20)}
+    _label_motors(ax, motors, fan)
+    M = np.array(motors)
+    ax.set_xlim(M[:, 0].min() - 0.014, M[:, 0].max() + 0.014)
+    ax.set_ylim(M[:, 1].min() - 0.022, M[:, 1].max() + 0.022)
+    ax.set_zlim(M[:, 2].min() - 0.010, M[:, 2].max() + 0.036)
+    ax.set_box_aspect((np.ptp(M[:, 0]) + 0.028, np.ptp(M[:, 1]) + 0.044, 0.055))
+    ax.view_init(elev=42, azim=-70)
+    _clean3d(ax)
+
+
+def _panel_system(ax, motors, coil_nums):
+    """Panel (b): the full platform — six motors ringed by the eight coils."""
+    halo = [pe.withStroke(linewidth=2.6, foreground="white")]
+    # draw order (coils -> arms -> tags) instead of depth sort keeps the arms
+    # and their tags in front of the translucent coils
+    ax.computed_zorder = False
+    elev, azim = 24, -58
+    view = np.array([math.cos(math.radians(elev)) * math.cos(math.radians(azim)),
+                     math.cos(math.radians(elev)) * math.sin(math.radians(azim)),
+                     math.sin(math.radians(elev))])
+    for num in sorted(coil_nums, key=lambda n: np.dot(COIL_POSES[n][1], view)):
+        _draw_coil(ax, num, view)
+    _draw_arm(ax, motors[0:3], 0)
+    _draw_arm(ax, motors[3:6], 1)
+    for ms, ai, txt in [(motors[0:3], 0, "Arm 1"), (motors[3:6], 1, "Arm 2")]:
+        c = np.mean(ms, axis=0); q = c + np.array([0.0, 0.0, 0.078])
+        ax.plot([c[0], q[0]], [c[1], q[1]], [c[2], q[2]], color=ARM_COLORS[ai],
+                lw=1.0, alpha=0.85)
+        t = ax.text(q[0], q[1], q[2], txt, fontsize=12.5, weight="bold",
+                    color=ARM_COLORS[ai], ha="center", va="center")
+        t.set_path_effects(halo)
+    ax.set_xlabel("$x$ (m)", labelpad=8)
+    ax.set_ylabel("$y$ (m)", labelpad=8)
+    ax.set_zlabel("$z$ (m)", labelpad=6)
+    L = 0.135
+    ax.set_xlim(-L, L); ax.set_ylim(-L, L); ax.set_zlim(-0.135, 0.06)
+    ax.set_xticks([-0.1, 0, 0.1]); ax.set_yticks([-0.1, 0, 0.1])
+    ax.set_zticks([-0.1, -0.05, 0, 0.05])
+    ax.set_box_aspect((1, 1, 0.72)); ax.view_init(elev=elev, azim=azim)
+    ax.tick_params(pad=1)
+
+
+def fig_layout(motors, coil_nums, out):
+    """Two-panel platform layout: (a) a zoomed arm detail with per-motor labels,
+    (b) the full platform — six motors ringed by the eight complete coils."""
     layout_style = dict(PAPER_STYLE)
     layout_style.update({
-        "font.size": 12,
-        "axes.labelsize": 12,
-        "axes.titlesize": 12,
-        "xtick.labelsize": 10.5,
-        "ytick.labelsize": 10.5,
-        "legend.fontsize": 10.5,
-        "figure.titlesize": 13.5,
+        "font.size": 15,
+        "axes.labelsize": 16,
+        "axes.titlesize": 15,
+        "xtick.labelsize": 11,
+        "ytick.labelsize": 11,
     })
     with plt.rc_context(layout_style):
-        fig = plt.figure(figsize=(3.55, 3.25))
-        ax = fig.add_subplot(111, projection="3d")
-        for c in coils:                                # coils as faint solenoids
-            mo = c[:3] / (np.linalg.norm(c[:3]) + 1e-9)
-            _cylinder(ax, c[3:6] - mo * 0.011, c[3:6] + mo * 0.011, 0.013, "0.72",
-                      alpha=0.26, cap=False)
-        _draw_arm(ax, motors[0:3], 0)
-        _draw_arm(ax, motors[3:6], 1)
-        ax.set_xlabel("$x$ (m)", labelpad=-2)
-        ax.set_ylabel("$y$ (m)", labelpad=-2)
-        ax.set_zlabel("$z$ (m)", labelpad=-2)
-        ax.tick_params(axis="both", which="major", pad=-2)
-        ax.set_xlim(-0.075, 0.075); ax.set_ylim(-0.075, 0.075); ax.set_zlim(-0.11, -0.01)
-        ax.set_box_aspect((1, 1, 0.7)); ax.view_init(elev=26, azim=-60)
-        legend = [Line2D([0], [0], marker="o", color="w", markerfacecolor=ARM_COLORS[0],
-                         markersize=9, label="Arm 1: M1-M3"),
-                  Line2D([0], [0], marker="o", color="w", markerfacecolor=ARM_COLORS[1],
-                         markersize=9, label="Arm 2: M4-M6"),
-                  Line2D([0], [0], color="0.72", lw=6, alpha=0.55, label="8 coils")]
-        ax.legend(handles=legend, loc="upper left", frameon=True, framealpha=0.88,
-                  borderpad=0.25, handlelength=1.2)
-        fig.subplots_adjust(left=-0.07, right=1.02, bottom=-0.03, top=0.99)
-        fig.savefig(out, dpi=PAPER_DPI, bbox_inches="tight", pad_inches=0.01)
+        fig = plt.figure(figsize=(7.6, 4.0))
+        axa = fig.add_axes([-0.01, 0.04, 0.40, 0.90], projection="3d")
+        axb = fig.add_axes([0.35, 0.00, 0.66, 0.96], projection="3d")
+        _panel_arms(axa, motors)
+        _panel_system(axb, motors, coil_nums)
+        axa.text2D(0.5, 0.97, "(a) arm detail", transform=axa.transAxes,
+                   ha="center", fontsize=13)
+        axb.text2D(0.5, 0.96, "(b) platform: 6 motors, 8 coils",
+                   transform=axb.transAxes, ha="center", fontsize=13)
+        fig.savefig(out, dpi=PAPER_DPI)
         plt.close(fig)
 
 
@@ -326,12 +453,13 @@ def fig_sequence(A, out):
         ax.set_ylim(-1.2, 30.8)
         ax.set_yticks([0, 15, 30])
         ax.set_xlim(0, n * Tseg)
-        ax.set_xlabel("time (s)")
-        ax.set_ylabel("angle (deg)")
+        ax.set_xticks([m * Tseg for m in range(n + 1)])
+        ax.set_xlabel("time (s)", labelpad=1.5)
+        ax.set_ylabel("angle (deg)", labelpad=1.5)
         ax.grid(True, ls=":", lw=0.45, color="0.82")
         ax.legend(ncol=3, loc="lower right", frameon=True, framealpha=0.9,
                   borderpad=0.2, handlelength=1.3, columnspacing=0.7)
-        ax.tick_params(direction="out", length=2.5, width=0.6)
+        ax.tick_params(direction="out", length=2.5, width=0.6, pad=2)
         fig.subplots_adjust(left=0.14, right=0.995, bottom=0.20, top=0.98)
         fig.savefig(out, dpi=PAPER_DPI, bbox_inches="tight", pad_inches=0.01)
         plt.close(fig)
@@ -383,7 +511,7 @@ def main():
     all_sel = bool(np.all(diag > 0.6) and np.all(off < 0.4))
 
     print("rendering figures...")
-    fig_layout(motors, coils, figdir / "dualarm_layout.png")
+    fig_layout(motors, [i + 1 for i in COILS_IDX], figdir / "dualarm_layout.png")
     fig_winding(W, curr, figdir / "dualarm_winding.png")
     fig_fields(A, 0, figdir / "dualarm_fields.png")
     fig_sequence(A, figdir / "dualarm_trajectories.png")
