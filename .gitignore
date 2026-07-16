@@ -19,3 +19,5 @@ env/
 *.log
 *.blg
 *.out
+
+AGENTS.md

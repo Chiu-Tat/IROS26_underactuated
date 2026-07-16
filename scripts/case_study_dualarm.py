@@ -54,7 +54,10 @@ EPS = 0.05 * OMEGA        # Coulomb-friction smoothing
 GEAR = 50                 # gearbox reduction
 N_CYCLES = 6
 ARM_COLORS = ("#1f77b4", "#d62728")
-MOTOR_COLORS = ["#1f77b4", "#4c9be8", "#8ec5ff", "#d62728", "#f07470", "#ffa8a8"]
+# Distinct, colorblind-friendly joint colors.  Arm 1 stays in a cool family
+# and arm 2 in a warm family, while every motor remains easy to identify.
+MOTOR_COLORS = ["#0072B2", "#009E73", "#7E57C2",
+                "#D55E00", "#E69F00", "#CC79A7"]
 PAPER_DPI = 300
 
 # Coil profile for the layout drawing only (magnetics stay in
@@ -251,19 +254,22 @@ def _draw_arm(ax, motors, ai):
     from matplotlib.colors import to_rgb
     m1, m2, m3 = motors
     z = np.array([0, 0, 1.0]); col = ARM_COLORS[ai]
+    joint_cols = MOTOR_COLORS[ai * 3:ai * 3 + 3]
     link_col = tuple(0.40 * c + 0.60 for c in to_rgb(col))  # pale arm tint
     _box(ax, (m1[0], m1[1], m1[2] - 0.010), 0.024, 0.024, 0.008, "0.35")  # base
     _cylinder(ax, (m1[0], m1[1], m1[2] - 0.006), m1, 0.006, "0.5")        # pillar
     _cylinder(ax, m1, m2, 0.0060, link_col)                                # link 1
     _cylinder(ax, m2, m3, 0.0060, link_col)                                # link 2
-    for p in (m1, m2):                                                     # joint motors
-        _cylinder(ax, p - z * 0.006, p + z * 0.006, 0.0085, col)
-    _cylinder(ax, m3 - z * 0.005, m3 + z * 0.005, 0.0072, col)            # gripper hub
+    for p, joint_col in zip((m1, m2), joint_cols[:2]):                    # joint motors
+        _cylinder(ax, p - z * 0.006, p + z * 0.006, 0.0085, joint_col)
+    _cylinder(ax, m3 - z * 0.005, m3 + z * 0.005, 0.0072,
+              joint_cols[2])                                               # gripper hub
     d = m3 - m2; d = d / (np.linalg.norm(d) + 1e-9)
     perp = np.array([-d[1], d[0], 0.0])
     for s in (1, -1):                                                      # gripper prongs
         root = m3 + perp * s * 0.005
-        _cylinder(ax, root, root + d * 0.013 + perp * s * 0.004, 0.0018, col)
+        _cylinder(ax, root, root + d * 0.013 + perp * s * 0.004, 0.0018,
+                  joint_cols[2])
 
 
 def _label_motors(ax, motors, fan, lift=0.030, spread=0.016, fs=13):
@@ -271,7 +277,7 @@ def _label_motors(ax, motors, fan, lift=0.030, spread=0.016, fs=13):
     the geometry. `fan[k]` is the (dx, dy) offset direction for motor k."""
     halo = [pe.withStroke(linewidth=2.6, foreground="white")]
     for k, p in enumerate(motors):
-        col = ARM_COLORS[0 if k < 3 else 1]
+        col = MOTOR_COLORS[k]
         dx, dy = fan[k]
         q = np.array([p[0] + dx * spread, p[1] + dy * spread, p[2] + lift])
         ax.plot([p[0], q[0]], [p[1], q[1]], [p[2], q[2]], color=col, lw=0.9,
