@@ -1,3 +1,4 @@
+CLAUDE.md
 # Python
 __pycache__/
 *.py[cod]
@@ -19,5 +20,5 @@ env/
 *.log
 *.blg
 *.out
-
 AGENTS.md
+
